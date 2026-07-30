@@ -19,7 +19,7 @@ import io
 import re
 import base64
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import pandas as pd
 
@@ -30,8 +30,22 @@ try:
 except (ImportError, ValueError):
     from validator import validate_lazada, validate_shopee, validate_tiktok
 
+# Frontend files (index.html, app.js, style.css) live one level up from /api
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), '..')
+
 app = Flask(__name__)
 CORS(app)
+
+@app.route('/')
+def serve_index():
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+@app.route('/<path:filename>')
+def serve_static(filename):
+    # Never let this catch API routes
+    if filename.startswith('api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return send_from_directory(FRONTEND_DIR, filename)
 
 def parse_file(uploaded_file, skip_lazada_rows=False):
     if uploaded_file is None or uploaded_file.filename == '':
