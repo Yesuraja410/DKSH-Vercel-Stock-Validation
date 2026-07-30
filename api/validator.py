@@ -1,0 +1,705 @@
+import pandas as pd
+import numpy as np
+import re
+
+def clean_sku(val):
+    """
+    Cleans SKU string by stripping whitespace and removing trailing .0 from Excel float representations.
+    """
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+def clean_pid(val):
+    """
+    Cleans Product ID by stripping whitespace and removing trailing .0.
+    """
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+def normalize_status(val):
+    """
+    Normalizes status values to 'Active' or 'Inactive'.
+    """
+    if pd.isna(val):
+        return "Inactive"
+    s = str(val).strip().lower()
+    if s in ['active', 'act', 'y', 'yes', '1', 'true', 'item_status_active']:
+        return "Active"
+    return "Inactive"
+
+class StockResolver:
+    """
+    Resolves TC Stock and Reserved Stock for single and bundle SKUs based on the All File.
+    Handles '+' bundles and 'X' bundles (e.g. AX2, AX3) recursively.
+    """
+    def __init__(self, all_df, buffer_type=None, buffer_val=0):
+        self.stock_map = {}
+        self.reserved_map = {}
+        self.buffer_type = buffer_type
+        self.buffer_val = buffer_val
+        
+        if all_df is not None and not all_df.empty:
+            actual_cols = list(all_df.columns)
+            
+            sku_col = None
+            for c in ["sellerSKU", "SellerSKU", "SKU", "Seller SKU", "sellersku"]:
+                if c in actual_cols:
+                    sku_col = c
+                    break
+            if not sku_col:
+                for c in actual_cols:
+                    if "sku" in c.lower():
+                        sku_col = c
+                        break
+                        
+            stock_col = None
+            for c in actual_cols:
+                if c.strip().lower() == "mystock-1 quantity":
+                    stock_col = c
+                    break
+            if not stock_col:
+                for c in ["TC Stock", "TCStock", "Stock", "Quantity", "TC_Stock"]:
+                    if c in actual_cols:
+                        stock_col = c
+                        break
+            if not stock_col:
+                for c in actual_cols:
+                    if "quantity" in c.lower() or "stock" in c.lower():
+                        stock_col = c
+                        break
+                        
+            reserved_col = None
+            for c in actual_cols:
+                if c.strip().lower() == "mystock-1 reservedquantity":
+                    reserved_col = c
+                    break
+            if not reserved_col:
+                for c in ["Reserved Stock", "ReservedStock", "Reserved", "TC Reserved", "TC_Reserved"]:
+                    if c in actual_cols:
+                        reserved_col = c
+                        break
+            if not reserved_col:
+                for c in actual_cols:
+                    if "reserved" in c.lower():
+                        reserved_col = c
+                        break
+
+            sku_key = sku_col if sku_col else 'sellerSKU'
+            stock_key = stock_col if stock_col else 'TC Stock'
+            reserved_key = reserved_col if reserved_col else 'Reserved Stock'
+
+            for _, row in all_df.iterrows():
+                sku = clean_sku(row.get(sku_key))
+                if sku:
+                    tc_stock = pd.to_numeric(row.get(stock_key), errors='coerce')
+                    reserved = pd.to_numeric(row.get(reserved_key), errors='coerce')
+                    self.stock_map[sku] = 0 if pd.isna(tc_stock) else int(tc_stock)
+                    self.reserved_map[sku] = 0 if pd.isna(reserved) else int(reserved)
+
+    def _get_raw_tc_stock(self, sku):
+        sku = clean_sku(sku)
+        if not sku:
+            return 0
+        
+        # Check if it is a "+" bundle (e.g., A+B)
+        if '+' in sku:
+            parts = [clean_sku(p) for p in sku.split('+') if clean_sku(p)]
+            if not parts:
+                return 0
+            stocks = [self._get_raw_tc_stock(p) for p in parts]
+            return min(stocks) if stocks else 0
+        
+        # Check if it is a "X" bundle (e.g., AX2, BX3)
+        match = re.search(r'^(.*)[xX](\d+)$', sku)
+        if match:
+            base_sku = clean_sku(match.group(1))
+            multiplier = int(match.group(2))
+            if multiplier > 0:
+                base_stock = self._get_raw_tc_stock(base_sku)
+                return base_stock // multiplier
+            
+        return self.stock_map.get(sku, 0)
+
+    def get_tc_stock(self, sku):
+        stock = self._get_raw_tc_stock(sku)
+        
+        if self.buffer_type == "Inventory Buffer" and self.buffer_val > 0:
+            stock = max(stock - int(self.buffer_val), 0)
+        elif self.buffer_type == "Percentage Buffer" and self.buffer_val > 0:
+            stock_float = stock * (1.0 - float(self.buffer_val) / 100.0)
+            stock = max(int(stock_float), 0)
+            
+        return stock
+
+    def get_reserved_stock(self, sku):
+        sku = clean_sku(sku)
+        if not sku:
+            return 0
+        
+        # If explicitly found in the map, return it
+        if sku in self.reserved_map:
+            return self.reserved_map[sku]
+            
+        if '+' in sku:
+            parts = [clean_sku(p) for p in sku.split('+') if clean_sku(p)]
+            return sum(self.get_reserved_stock(p) for p in parts)
+            
+        match = re.search(r'^(.*)[xX](\d+)$', sku)
+        if match:
+            base_sku = clean_sku(match.group(1))
+            multiplier = int(match.group(2))
+            if multiplier > 0:
+                return self.get_reserved_stock(base_sku) // multiplier
+                
+        return 0
+
+def evaluate_sku_logic(mp_status, tc_status, mp_stock, tc_stock, reserved_stock, max_0):
+    """
+    Evaluates stock and status validation rules for a single SKU.
+    Returns: (status_check_bool, stock_check_bool, action_message)
+    """
+    # Normalize inputs
+    norm_mp_status = normalize_status(mp_status)
+    norm_tc_status = normalize_status(tc_status)
+    
+    # Cast to int
+    try:
+        mp_stock_val = int(float(mp_stock))
+    except (ValueError, TypeError):
+        mp_stock_val = 0
+        
+    try:
+        tc_stock_val = int(float(tc_stock))
+    except (ValueError, TypeError):
+        tc_stock_val = 0
+        
+    try:
+        res_stock_val = int(float(reserved_stock))
+    except (ValueError, TypeError):
+        res_stock_val = 0
+        
+    # Check max 0 format
+    max_0_val = str(max_0).strip().title() # 'Yes' or 'No'
+    if max_0_val not in ['Yes', 'No']:
+        max_0_val = 'No'
+
+    status_check = (norm_mp_status == norm_tc_status)
+    stock_check = (mp_stock_val == tc_stock_val)
+    
+    if max_0_val == "Yes":
+        action = "Set Max Products"
+    elif not status_check:
+        if tc_stock_val == 0:
+            action = "Change to Inactive"
+        else:
+            action = "Change to Active"
+            
+    elif not stock_check:
+        if norm_tc_status == "Active":
+            if res_stock_val == 0 and max_0_val == "No":
+                action = "Make Impact"
+            elif res_stock_val != 0:
+                action = "Reserved stock"
+            else:
+                action = "Make Impact"
+        else: # norm_tc_status == "Inactive"
+            if tc_stock_val > 0:
+                action = "Change to Active"
+            else:
+                action = "Stock not pushed due to Inactive Status"
+            
+    else:
+        if tc_stock_val == 0:
+            if norm_tc_status == "Inactive" and norm_mp_status == "Inactive":
+                action = "All Good"
+            else:
+                action = "Change to Inactive"
+        else:
+            if norm_tc_status == "Active" and norm_mp_status == "Active":
+                action = "All Good"
+            else:
+                action = "Change to Active"
+        
+    return status_check, stock_check, action
+
+def validate_lazada(lazada_df, tc_inv_df, all_df, buffer_type=None, buffer_val=0):
+    """
+    Validates Lazada SG/MY/TH data at the SKU level.
+    """
+    resolver = StockResolver(all_df, buffer_type, buffer_val)
+    
+    qty_headers = [
+        "DKSH SINGAPORE PTE LTD (HEC)", "DKSH SINGAPORE", "No Brand",
+        "DKSH SINGAPORE HEALTHCARE", "dropshipping", "DKSH",
+        "DKSH CONSUMER GOODS WAREHOUSE", "DKSH CONSUMER GOODS RETURN WAREHOUSE",
+        "ne1h8SSm", "Sofy Silcot UCM", "Lifree Certainty UCM",
+        "seller-iku-lamy-sggraas.ai17210300565", "Audisol Official Store",
+        "Warehouse", "GkAkNaw0", "Quantity", "DKSH Malaysia Sdn. Bhd.",
+        "Glutanex Malaysia Official Store", "BD Diabetes Care",
+        "seller-ill-trichoderm-mygraas.ai1704178070813", "SMITH & NEPHEW",
+        "DKSH Bangna KM.20", "บริษัทดีเคเอสเอช(ประเทศไทย)จำกัด", "DKSH Bangna",
+        "dropping"
+    ]
+    qty_headers_set = {h.strip().lower() for h in qty_headers}
+    
+    tc_inv_lookup = {}
+    if tc_inv_df is not None and not tc_inv_df.empty:
+        for _, row in tc_inv_df.iterrows():
+            sku = clean_sku(row.get('Custom SKU'))
+            if sku:
+                tc_status = normalize_status(row.get('Item status'))
+                max_qty_val = row.get('Max Quantity')
+                
+                if pd.isna(max_qty_val) or str(max_qty_val).strip() == '':
+                    max_0 = 'No'
+                else:
+                    try:
+                        max_qty = float(max_qty_val)
+                        max_0 = 'Yes' if max_qty == 0 else 'No'
+                    except ValueError:
+                        max_0 = 'No'
+                        
+                tc_inv_lookup[sku] = {
+                    'tc_status': tc_status,
+                    'max_0': max_0
+                }
+                
+    results = []
+    for _, row in lazada_df.iterrows():
+        sku = clean_sku(row.get('SellerSKU'))
+        if not sku:
+            # Try lowercase key fallback
+            sku = clean_sku(row.get('sellersku'))
+            if not sku:
+                # Try generic SKU fallback
+                sku = clean_sku(row.get('SKU'))
+                if not sku:
+                    continue
+            
+        mp_stock = 0
+        found_qty = False
+        for col in row.index:
+            if str(col).strip().lower() in qty_headers_set:
+                mp_stock = row[col]
+                found_qty = True
+                break
+        if not found_qty:
+            for col in row.index:
+                if 'qty' in str(col).lower() or 'stock' in str(col).lower() or 'quantity' in str(col).lower():
+                    mp_stock = row[col]
+                    break
+
+        mp_status = row.get('status', 'Inactive')
+        if 'status' not in row and 'status' not in lazada_df.columns:
+            for col in row.index:
+                if 'status' in str(col).lower() or 'item status' in str(col).lower():
+                    mp_status = row[col]
+                    break
+        
+        tc_info = tc_inv_lookup.get(sku, {'tc_status': 'Inactive', 'max_0': 'No'})
+        tc_status = tc_info['tc_status']
+        max_0 = tc_info['max_0']
+        
+        tc_stock = resolver.get_tc_stock(sku)
+        reserved_stock = resolver.get_reserved_stock(sku)
+        
+        status_chk, stock_chk, action = evaluate_sku_logic(
+            mp_status=mp_status,
+            tc_status=tc_status,
+            mp_stock=mp_stock,
+            tc_stock=tc_stock,
+            reserved_stock=reserved_stock,
+            max_0=max_0
+        )
+        
+        buffer = int(tc_stock) - int(mp_stock) if pd.notna(tc_stock) and pd.notna(mp_stock) else 0
+        
+        results.append({
+            'Seller SKU': sku,
+            'MP Status (Lazada)': mp_status,
+            'TC Status': tc_status,
+            'Status Check': status_chk,
+            'MP Stock (Lazada)': mp_stock,
+            'TC Stock': tc_stock,
+            'Reserved Stock': reserved_stock,
+            'Max 0': max_0,
+            'Stock Check': stock_chk,
+            'QTY Difference': buffer,
+            'Action Required': action
+        })
+        
+    return pd.DataFrame(results)
+
+def validate_shopee(shopee_stock_df, shopee_status_df, tc_inv_df, all_df, buffer_type=None, buffer_val=0):
+    """
+    Validates Shopee SG/MY/TH data at both the Product ID (Consolidated) level and SKU level.
+    """
+    resolver = StockResolver(all_df, buffer_type, buffer_val)
+    
+    active_pids = set()
+    if shopee_status_df is not None and not shopee_status_df.empty:
+        pid_col = None
+        for col in shopee_status_df.columns:
+            if 'product id' in str(col).lower() or 'pid' in str(col).lower():
+                pid_col = col
+                break
+        if pid_col is None:
+            pid_col = shopee_status_df.columns[0]
+            
+        for val in shopee_status_df[pid_col]:
+            cleaned = clean_pid(val)
+            if cleaned:
+                active_pids.add(cleaned)
+                
+    tc_inv_lookup = {}
+    if tc_inv_df is not None and not tc_inv_df.empty:
+        for _, row in tc_inv_df.iterrows():
+            sku = clean_sku(row.get('Custom SKU'))
+            if sku:
+                tc_status = normalize_status(row.get('Item status'))
+                max_qty_val = row.get('Max Quantity')
+                if pd.isna(max_qty_val) or str(max_qty_val).strip() == '':
+                    max_0 = 'No'
+                else:
+                    try:
+                        max_qty = float(max_qty_val)
+                        max_0 = 'Yes' if max_qty == 0 else 'No'
+                    except ValueError:
+                        max_0 = 'No'
+                tc_inv_lookup[sku] = {'tc_status': tc_status, 'max_0': max_0}
+                
+    sku_key = 'SKU'
+    pid_key = 'Product ID'
+    stock_key = 'Stock'
+    
+    if shopee_stock_df is not None and not shopee_stock_df.empty:
+        actual_cols = list(shopee_stock_df.columns)
+        
+        # 1. Match SKU
+        for c in ["SKU", "sku", "Seller SKU", "Variation SKU", "SKU Reference No.", "Parent SKU", "SKU Reference No"]:
+            if c in actual_cols:
+                sku_key = c
+                break
+        if sku_key not in actual_cols:
+            for c in actual_cols:
+                if "sku" in c.lower():
+                    sku_key = c
+                    break
+                    
+        # 2. Match Product ID
+        for c in ["Product ID", "product id", "PID", "Item ID", "item id", "Product ID (optional)", "item_id"]:
+            if c in actual_cols:
+                pid_key = c
+                break
+        if pid_key not in actual_cols:
+            for c in actual_cols:
+                if "product" in c.lower() or "item" in c.lower() or "pid" in c.lower():
+                    pid_key = c
+                    break
+                    
+        # 3. Match Stock
+        for c in ["Stock", "stock", "Quantity", "quantity", "Qty", "qty", "Current Stock"]:
+            if c in actual_cols:
+                stock_key = c
+                break
+        if stock_key not in actual_cols:
+            for c in actual_cols:
+                if "stock" in c.lower() or "qty" in c.lower() or "quantity" in c.lower():
+                    stock_key = c
+                    break
+
+    pid_groups = {}
+    
+    for _, row in shopee_stock_df.iterrows():
+        sku = clean_sku(row.get(sku_key))
+        pid = clean_pid(row.get(pid_key))
+        
+        # Discard metadata rows
+        if not sku or not pid:
+            continue
+        sku_lower = sku.lower()
+        pid_lower = pid.lower()
+        if pid_lower == 'sales_info' or pid_lower == 'product id' or 'search_condition' in sku_lower or sku_lower == 'parent sku':
+            continue
+            
+        mp_stock = pd.to_numeric(row.get(stock_key), errors='coerce')
+        mp_stock = 0 if pd.isna(mp_stock) else int(mp_stock)
+        
+        mp_status = "Active" if pid in active_pids else "Inactive"
+        
+        tc_info = tc_inv_lookup.get(sku, {'tc_status': 'Inactive', 'max_0': 'No'})
+        tc_status = tc_info['tc_status']
+        max_0 = tc_info['max_0']
+        
+        tc_stock = resolver.get_tc_stock(sku)
+        reserved_stock = resolver.get_reserved_stock(sku)
+        
+        if pid not in pid_groups:
+            pid_groups[pid] = {
+                'skus': [],
+                'mp_stock': 0,
+                'mp_status': mp_status,
+                'tc_statuses': [],
+                'tc_stock': 0,
+                'reserved_stock': 0,
+                'max_0_values': []
+            }
+        
+        pid_groups[pid]['skus'].append(sku)
+        pid_groups[pid]['mp_stock'] += mp_stock
+        pid_groups[pid]['tc_statuses'].append(tc_status)
+        pid_groups[pid]['tc_stock'] += tc_stock
+        pid_groups[pid]['reserved_stock'] += reserved_stock
+        pid_groups[pid]['max_0_values'].append(max_0)
+        
+    results = []
+    for pid, group in pid_groups.items():
+        unique_skus = list(dict.fromkeys(group['skus']))
+        skus_str = "+".join(unique_skus)
+        
+        mp_status = group['mp_status']
+        tc_status = "Active" if "Active" in group['tc_statuses'] else "Inactive"
+        
+        mp_stock_val = group['mp_stock']
+        tc_stock_val = group['tc_stock']
+        res_stock_val = group['reserved_stock']
+        
+        max_0 = "Yes" if "Yes" in group['max_0_values'] else "No"
+        
+        status_chk, stock_chk, action = evaluate_sku_logic(
+            mp_status=mp_status,
+            tc_status=tc_status,
+            mp_stock=mp_stock_val,
+            tc_stock=tc_stock_val,
+            reserved_stock=res_stock_val,
+            max_0=max_0
+        )
+        
+        buffer = tc_stock_val - mp_stock_val
+        
+        results.append({
+            'Product ID': pid,
+            'SKU': skus_str,
+            'MP Status (Shopee)': mp_status,
+            'TC Status': tc_status,
+            'Status Check': status_chk,
+            'MP Stock (Shopee)': mp_stock_val,
+            'TC Stock': tc_stock_val,
+            'Reserved Stock': res_stock_val,
+            'Max 0': max_0,
+            'Stock Check': stock_chk,
+            'QTY Difference': buffer,
+            'Action Required': action
+        })
+        
+    return pd.DataFrame(results)
+
+def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buffer_type=None, buffer_val=0):
+    """
+    Validates TikTok SG/MY/TH data at both the Product ID (Consolidated) level and SKU level.
+    Combines Active and Inactive stock files.
+    """
+    resolver = StockResolver(all_df, buffer_type, buffer_val)
+    
+    # 1. Gather all TikTok items from both active and inactive reports
+    tiktok_items = []
+    
+    if tiktok_active_df is not None and not tiktok_active_df.empty:
+        sku_col = None
+        for col in tiktok_active_df.columns:
+            if 'seller sku' in str(col).lower() or 'sku' in str(col).lower():
+                sku_col = col
+                break
+        if sku_col is None:
+            sku_col = tiktok_active_df.columns[0]
+            
+        pid_col = None
+        for col in tiktok_active_df.columns:
+            if 'product id' in str(col).lower() or 'pid' in str(col).lower():
+                pid_col = col
+                break
+        if pid_col is None:
+            pid_col = tiktok_active_df.columns[1] if len(tiktok_active_df.columns) > 1 else tiktok_active_df.columns[0]
+            
+        qty_col = None
+        for col in tiktok_active_df.columns:
+            if 'quantity' in str(col).lower() or 'qty' in str(col).lower() or 'stock' in str(col).lower():
+                qty_col = col
+                break
+        if qty_col is None:
+            qty_col = tiktok_active_df.columns[2] if len(tiktok_active_df.columns) > 2 else tiktok_active_df.columns[0]
+
+        for _, row in tiktok_active_df.iterrows():
+            sku = clean_sku(row.get(sku_col))
+            pid = clean_pid(row.get(pid_col))
+            qty_val = pd.to_numeric(row.get(qty_col), errors='coerce')
+            qty = 0 if pd.isna(qty_val) else int(qty_val)
+            
+            if sku:
+                tiktok_items.append({
+                    'sku': sku,
+                    'pid': pid,
+                    'mp_stock': qty,
+                    'mp_status': 'Active'
+                })
+                
+    if tiktok_inactive_df is not None and not tiktok_inactive_df.empty:
+        sku_col = None
+        for col in tiktok_inactive_df.columns:
+            if 'seller sku' in str(col).lower() or 'sku' in str(col).lower():
+                sku_col = col
+                break
+        if sku_col is None:
+            sku_col = tiktok_inactive_df.columns[0]
+            
+        pid_col = None
+        for col in tiktok_inactive_df.columns:
+            if 'product id' in str(col).lower() or 'pid' in str(col).lower():
+                pid_col = col
+                break
+        if pid_col is None:
+            pid_col = tiktok_inactive_df.columns[1] if len(tiktok_inactive_df.columns) > 1 else tiktok_inactive_df.columns[0]
+            
+        qty_col = None
+        for col in tiktok_inactive_df.columns:
+            if 'quantity' in str(col).lower() or 'qty' in str(col).lower() or 'stock' in str(col).lower():
+                qty_col = col
+                break
+        if qty_col is None:
+            qty_col = tiktok_inactive_df.columns[2] if len(tiktok_inactive_df.columns) > 2 else tiktok_inactive_df.columns[0]
+
+        for _, row in tiktok_inactive_df.iterrows():
+            sku = clean_sku(row.get(sku_col))
+            pid = clean_pid(row.get(pid_col))
+            qty_val = pd.to_numeric(row.get(qty_col), errors='coerce')
+            qty = 0 if pd.isna(qty_val) else int(qty_val)
+            
+            if sku:
+                tiktok_items.append({
+                    'sku': sku,
+                    'pid': pid,
+                    'mp_stock': qty,
+                    'mp_status': 'Inactive'
+                })
+
+    # Deduplicate tiktok_items by SKU, prioritizing Active status
+    sku_to_item = {}
+    for item in tiktok_items:
+        s = item['sku']
+        if s not in sku_to_item:
+            sku_to_item[s] = item
+        else:
+            # If duplicate exists, prioritize "Active"
+            if sku_to_item[s]['mp_status'] == 'Inactive' and item['mp_status'] == 'Active':
+                sku_to_item[s] = item
+    tiktok_items = list(sku_to_item.values())
+
+    # 2. Build TC Inventory Lookup
+    tc_inv_lookup = {}
+    if tc_inv_df is not None and not tc_inv_df.empty:
+        for _, row in tc_inv_df.iterrows():
+            sku = clean_sku(row.get('Custom SKU'))
+            if sku:
+                tc_status = normalize_status(row.get('Item status'))
+                max_qty_val = row.get('Max Quantity')
+                if pd.isna(max_qty_val) or str(max_qty_val).strip() == '':
+                    max_0 = 'No'
+                else:
+                    try:
+                        max_qty = float(max_qty_val)
+                        max_0 = 'Yes' if max_qty == 0 else 'No'
+                    except ValueError:
+                        max_0 = 'No'
+                tc_inv_lookup[sku] = {'tc_status': tc_status, 'max_0': max_0}
+                
+    pid_groups = {}
+    
+    # Process combined items
+    for item in tiktok_items:
+        sku = item['sku']
+        pid = item['pid']
+        mp_stock = item['mp_stock']
+        mp_status = item['mp_status']
+        
+        # Discard metadata rows
+        if not sku or not pid:
+            continue
+        s_lower = sku.lower()
+        p_lower = pid.lower()
+        if p_lower in ['category', 'mandatory', 'uneditable'] or s_lower in ['sku id', 'mandatory', 'uneditable']:
+            continue
+            
+        tc_info = tc_inv_lookup.get(sku, {'tc_status': 'Inactive', 'max_0': 'No'})
+        tc_status = tc_info['tc_status']
+        max_0 = tc_info['max_0']
+        
+        tc_stock = resolver.get_tc_stock(sku)
+        reserved_stock = resolver.get_reserved_stock(sku)
+        
+        if pid not in pid_groups:
+            pid_groups[pid] = {
+                'skus': [],
+                'mp_stock': 0,
+                'mp_status': mp_status,
+                'tc_statuses': [],
+                'tc_stock': 0,
+                'reserved_stock': 0,
+                'max_0_values': []
+            }
+            
+        pid_groups[pid]['skus'].append(sku)
+        pid_groups[pid]['mp_stock'] += mp_stock
+        pid_groups[pid]['tc_statuses'].append(tc_status)
+        pid_groups[pid]['tc_stock'] += tc_stock
+        pid_groups[pid]['reserved_stock'] += reserved_stock
+        pid_groups[pid]['max_0_values'].append(max_0)
+        
+    results = []
+    for pid, group in pid_groups.items():
+        unique_skus = list(dict.fromkeys(group['skus']))
+        skus_str = "+".join(unique_skus)
+        
+        mp_status = group['mp_status']
+        tc_status = "Active" if "Active" in group['tc_statuses'] else "Inactive"
+        
+        mp_stock_val = group['mp_stock']
+        tc_stock_val = group['tc_stock']
+        res_stock_val = group['reserved_stock']
+        
+        max_0 = "Yes" if "Yes" in group['max_0_values'] else "No"
+        
+        status_chk, stock_chk, action = evaluate_sku_logic(
+            mp_status=mp_status,
+            tc_status=tc_status,
+            mp_stock=mp_stock_val,
+            tc_stock=tc_stock_val,
+            reserved_stock=res_stock_val,
+            max_0=max_0
+        )
+        
+        buffer = tc_stock_val - mp_stock_val
+        
+        results.append({
+            'Product ID': pid,
+            'SKU': skus_str,
+            'MP Status (TikTok)': mp_status,
+            'TC Status': tc_status,
+            'Status Check': status_chk,
+            'MP Stock (TikTok)': mp_stock_val,
+            'TC Stock': tc_stock_val,
+            'Reserved Stock': res_stock_val,
+            'Max 0': max_0,
+            'Stock Check': stock_chk,
+            'QTY Difference': buffer,
+            'Action Required': action
+        })
+        
+    return pd.DataFrame(results)

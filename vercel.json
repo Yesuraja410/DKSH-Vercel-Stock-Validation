@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/validate.py": {
+      "maxDuration": 60
+    }
+  }
+}

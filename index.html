@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DKSH Stock & Status Validator</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- App Layout -->
+    <div class="app-container">
+        
+        <!-- Sidebar Panel -->
+        <aside class="sidebar">
+            <div class="logo-area">
+                <i class="fa-solid fa-square-poll-vertical logo-icon"></i>
+                <div class="logo-text">
+                    <h1>DKSH Validator</h1>
+                    <span>SG, MY & TH Marketplaces</span>
+                </div>
+            </div>
+
+            <!-- Configuration Form -->
+            <form id="validation-form" onsubmit="return false;">
+                
+                <!-- Country Selection -->
+                <div class="form-group">
+                    <label for="country"><i class="fa-solid fa-earth-asia"></i> SELECT COUNTRY</label>
+                    <select id="country" name="country">
+                        <option value="SG">Singapore (SG)</option>
+                        <option value="MY">Malaysia (MY)</option>
+                        <option value="TH">Thailand (TH)</option>
+                    </select>
+                </div>
+
+                <hr class="separator">
+
+                <!-- File Inputs Section -->
+                <div class="file-section">
+                    
+                    <!-- Reference Files Accordion -->
+                    <details class="sidebar-accordion" open>
+                        <summary><i class="fa-solid fa-file-invoice"></i> Reference Files <i class="fa-solid fa-chevron-right caret"></i></summary>
+                        <div class="accordion-content">
+                            <!-- TC All File -->
+                            <div class="file-uploader mandatory" data-field="all_file">
+                                <div class="upload-dropzone" id="drop-all_file">
+                                    <i class="fa-solid fa-file-csv"></i>
+                                    <div class="upload-label">TC All File *</div>
+                                    <span class="file-hint">Drag & drop or click to upload CSV/XLSX</span>
+                                </div>
+                                <input type="file" id="input-all_file" name="all_file" accept=".csv,.xlsx,.xls" required style="display: none;">
+                                <div class="file-info" id="info-all_file">No file selected</div>
+                            </div>
+
+                            <!-- TC Inventory -->
+                            <div class="file-uploader mandatory" data-field="tc_inventory">
+                                <div class="upload-dropzone" id="drop-tc_inventory">
+                                    <i class="fa-solid fa-warehouse"></i>
+                                    <div class="upload-label">TC Inventory *</div>
+                                    <span class="file-hint">Drag & drop or click to upload CSV/XLSX</span>
+                                </div>
+                                <input type="file" id="input-tc_inventory" name="tc_inventory" accept=".csv,.xlsx,.xls" required style="display: none;">
+                                <div class="file-info" id="info-tc_inventory">No file selected</div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <!-- Lazada Accordion -->
+                    <details class="sidebar-accordion">
+                        <summary><i class="fa-solid fa-shopping-bag"></i> Lazada <span class="country-lbl">SG</span> <i class="fa-solid fa-chevron-right caret"></i></summary>
+                        <div class="accordion-content">
+                            <!-- Lazada -->
+                            <div class="file-uploader" data-field="lazada">
+                                <div class="upload-dropzone" id="drop-lazada">
+                                    <i class="fa-solid fa-shopping-bag"></i>
+                                    <div class="upload-label">Lazada File</div>
+                                    <span class="file-hint">Upload Lazada Report</span>
+                                </div>
+                                <input type="file" id="input-lazada" name="lazada" accept=".csv,.xlsx,.xls" style="display: none;">
+                                <div class="file-info" id="info-lazada">No file selected</div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <!-- Shopee Accordion -->
+                    <details class="sidebar-accordion">
+                        <summary><i class="fa-solid fa-cubes"></i> Shopee <span class="country-lbl">SG</span> <i class="fa-solid fa-chevron-right caret"></i></summary>
+                        <div class="accordion-content">
+                            <!-- Shopee Stock -->
+                            <div class="file-uploader" data-field="shopee_stock">
+                                <div class="upload-dropzone" id="drop-shopee_stock">
+                                    <i class="fa-solid fa-cubes"></i>
+                                    <div class="upload-label">Shopee Stock</div>
+                                    <span class="file-hint">Upload Shopee Stock Report</span>
+                                </div>
+                                <input type="file" id="input-shopee_stock" name="shopee_stock" accept=".csv,.xlsx,.xls" style="display: none;">
+                                <div class="file-info" id="info-shopee_stock">No file selected</div>
+                            </div>
+
+                            <!-- Shopee Status -->
+                            <div class="file-uploader" data-field="shopee_status">
+                                <div class="upload-dropzone" id="drop-shopee_status">
+                                    <i class="fa-solid fa-toggle-on"></i>
+                                    <div class="upload-label">Shopee Status</div>
+                                    <span class="file-hint">Upload Shopee Status Report</span>
+                                </div>
+                                <input type="file" id="input-shopee_status" name="shopee_status" accept=".csv,.xlsx,.xls" style="display: none;">
+                                <div class="file-info" id="info-shopee_status">No file selected</div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <!-- TikTok Accordion -->
+                    <details class="sidebar-accordion">
+                        <summary><i class="fa-brands fa-tiktok"></i> TikTok <span class="country-lbl">SG</span> <i class="fa-solid fa-chevron-right caret"></i></summary>
+                        <div class="accordion-content">
+                            <!-- TikTok Active -->
+                            <div class="file-uploader" data-field="tiktok_active">
+                                <div class="upload-dropzone" id="drop-tiktok_active">
+                                    <i class="fa-brands fa-tiktok"></i>
+                                    <div class="upload-label">TikTok Active</div>
+                                    <span class="file-hint">TikTok Active Product Report</span>
+                                </div>
+                                <input type="file" id="input-tiktok_active" name="tiktok_active" accept=".csv,.xlsx,.xls" style="display: none;">
+                                <div class="file-info" id="info-tiktok_active">No file selected</div>
+                            </div>
+
+                            <!-- TikTok Inactive -->
+                            <div class="file-uploader" data-field="tiktok_inactive">
+                                <div class="upload-dropzone" id="drop-tiktok_inactive">
+                                    <i class="fa-regular fa-eye-slash"></i>
+                                    <div class="upload-label">TikTok Inactive</div>
+                                    <span class="file-hint">TikTok Inactive Product Report</span>
+                                </div>
+                                <input type="file" id="input-tiktok_inactive" name="tiktok_inactive" accept=".csv,.xlsx,.xls" style="display: none;">
+                                <div class="file-info" id="info-tiktok_inactive">No file selected</div>
+                            </div>
+                        </div>
+                    </details>
+
+                </div>
+
+                <hr class="separator">
+
+                <!-- Buffer Selection -->
+                <div class="form-group">
+                    <label for="buffer_type"><i class="fa-solid fa-shield-halved"></i> CHANNEL BUFFER</label>
+                    <select id="buffer_type" name="buffer_type">
+                        <option value="None">None</option>
+                        <option value="Inventory Buffer">Inventory Buffer (Qty)</option>
+                        <option value="Percentage Buffer">Percentage Buffer (%)</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="buffer-val-group" style="display: none;">
+                    <label id="buffer-val-label" for="buffer_val">Reduce Value</label>
+                    <input type="number" id="buffer_val" name="buffer_val" value="0" min="0" step="any">
+                </div>
+
+                <!-- Submit Button -->
+                <button type="submit" id="btn-run" class="btn-primary">
+                    <i class="fa-solid fa-circle-play"></i> Run Validation
+                </button>
+            </form>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            
+            <!-- App Banner Header -->
+            <header class="banner-header">
+                <div class="banner-info">
+                    <h2>Stock & Status Validator Dashboard</h2>
+                    <p>Process reference inventories, consolidate Product ID metrics, and export clean validation reports.</p>
+                </div>
+                <div class="status-indicator">
+                    <span class="badge offline" id="connection-badge"><i class="fa-solid fa-circle"></i> Ready</span>
+                </div>
+            </header>
+
+            <!-- Dashboard Navigation Tabs -->
+            <nav class="nav-tabs">
+                <button class="tab-link active" data-tab="tab-validation"><i class="fa-solid fa-square-check"></i> Status Validation</button>
+                <button class="tab-link" data-tab="tab-downloads"><i class="fa-solid fa-cloud-arrow-down"></i> Downloads</button>
+            </nav>
+
+            <!-- Tab Panels -->
+            <div class="tab-content">
+                
+                <!-- Panel 1: Status Validation -->
+                <section class="tab-panel active" id="tab-validation">
+                    
+                    <div id="validation-empty-state" class="empty-state">
+                        <i class="fa-solid fa-square-poll-horizontal"></i>
+                        <h3>No Validation Run Yet</h3>
+                        <p>Upload files in the sidebar and click <strong>Run Validation</strong> to see metrics and validation mismatch summaries.</p>
+                    </div>
+
+                    <div id="validation-results-area" style="display: none;">
+                        
+                        <!-- Sub Tabs for Channels -->
+                        <div class="sub-tabs" id="marketplace-sub-tabs">
+                            <!-- Dynamic marketplace buttons will be loaded here -->
+                        </div>
+
+                        <!-- Main Channel Display Area -->
+                        <div class="channel-display" id="channel-display-container">
+                            <!-- Dynamic channel data will load here -->
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Panel 2: Downloads -->
+                <section class="tab-panel" id="tab-downloads">
+                    <div id="download-empty-state" class="empty-state">
+                        <i class="fa-solid fa-cloud-arrow-down"></i>
+                        <h3>No Generated Reports</h3>
+                        <p>Run validation first to prepare a downloadable formatted Excel sheet.</p>
+                    </div>
+
+                    <div id="download-active-state" class="download-container" style="display: none;">
+                        <div class="download-card">
+                            <i class="fa-solid fa-file-excel excel-icon"></i>
+                            <div class="download-details">
+                                <h3 id="report-name-lbl">DKSH_Validation_Report.xlsx</h3>
+                                <p id="report-meta-lbl">Ready for download</p>
+                            </div>
+                            <button id="btn-download-excel" class="btn-download">
+                                <i class="fa-solid fa-arrow-down-long"></i> Download Report
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Spinner / Loading Overlay -->
+    <div id="loading-overlay" class="overlay" style="display: none;">
+        <div class="spinner-container">
+            <div class="spinner"></div>
+            <p>Processing inventories and bundles...</p>
+            <span class="sub-spinner-lbl">This might take a moment depending on the dataset sizes.</span>
+        </div>
+    </div>
+
+    <!-- Javascript Script -->
+    <script src="app.js"></script>
+</body>
+</html>
