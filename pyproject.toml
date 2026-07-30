@@ -1,0 +1,14 @@
+[project]
+name = "dksh-stock-validation"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "flask",
+    "flask-cors",
+    "pandas",
+    "openpyxl",
+    "xlrd",
+]
+
+[tool.vercel]
+entrypoint = "api.validate:app"
