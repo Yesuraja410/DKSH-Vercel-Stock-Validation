@@ -502,6 +502,78 @@ def validate_shopee(shopee_stock_df, shopee_status_df, tc_inv_df, all_df, buffer
         
     return pd.DataFrame(results)
 
+def find_and_clean_tiktok_data(df, source_status):
+    """
+    Locates the header row (containing Product ID and Seller SKU) in the TikTok template,
+    slices the remaining rows as data, extracts cleaned SKU, Product ID, and quantity,
+    and returns a list of items with the specified source status.
+    """
+    header_idx = -1
+    for i, row in df.iterrows():
+        row_vals = [str(val).strip().lower() for val in row.values]
+        if 'product id' in row_vals and 'seller sku' in row_vals:
+            header_idx = i
+            break
+            
+    if header_idx != -1:
+        headers = [str(val).strip() for val in df.iloc[header_idx].values]
+        data_df = df.iloc[header_idx+1:].copy()
+        data_df.columns = headers
+    else:
+        data_df = df.copy()
+        
+    sku_col = None
+    pid_col = None
+    qty_col = None
+    
+    for col in data_df.columns:
+        c_clean = str(col).strip().lower().replace('_', '').replace(' ', '')
+        if c_clean == 'sellersku':
+            sku_col = col
+        elif c_clean == 'productid':
+            pid_col = col
+        elif c_clean == 'quantity' or c_clean == 'qty' or c_clean == 'stock':
+            qty_col = col
+            
+    if sku_col is None:
+        for col in data_df.columns:
+            if 'seller sku' in str(col).lower():
+                sku_col = col
+                break
+    if pid_col is None:
+        for col in data_df.columns:
+            if 'product id' in str(col).lower():
+                pid_col = col
+                break
+    if qty_col is None:
+        for col in data_df.columns:
+            if 'quantity' in str(col).lower() or 'qty' in str(col).lower() or 'stock' in str(col).lower():
+                qty_col = col
+                break
+                
+    items = []
+    if sku_col and pid_col and qty_col:
+        for idx, row in data_df.iterrows():
+            sku = clean_sku(row.get(sku_col))
+            pid = clean_pid(row.get(pid_col))
+            qty_val = pd.to_numeric(row.get(qty_col), errors='coerce')
+            qty = 0 if pd.isna(qty_val) else int(qty_val)
+            
+            if not sku or not pid:
+                continue
+            sku_lower = sku.lower()
+            pid_lower = pid.lower()
+            if pid_lower in ['product id', 'mandatory', 'uneditable', 'category', 'uneditable.'] or sku_lower in ['seller sku', 'mandatory', 'optional', 'uneditable', 'identifier of the product or variant. this is used to quickly find the item in other systems.']:
+                continue
+                
+            items.append({
+                'sku': sku,
+                'pid': pid,
+                'mp_stock': qty,
+                'mp_status': source_status
+            })
+    return items
+
 def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buffer_type=None, buffer_val=0):
     """
     Validates TikTok SG/MY/TH data at both the Product ID (Consolidated) level and SKU level.
@@ -510,86 +582,11 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
     resolver = StockResolver(all_df, buffer_type, buffer_val)
     
     # 1. Gather all TikTok items from both active and inactive reports
-    tiktok_items = []
+    active_items = find_and_clean_tiktok_data(tiktok_active_df, "Active") if tiktok_active_df is not None and not tiktok_active_df.empty else []
+    inactive_items = find_and_clean_tiktok_data(tiktok_inactive_df, "Inactive") if tiktok_inactive_df is not None and not tiktok_inactive_df.empty else []
     
-    if tiktok_active_df is not None and not tiktok_active_df.empty:
-        sku_col = None
-        for col in tiktok_active_df.columns:
-            if 'seller sku' in str(col).lower() or 'sku' in str(col).lower():
-                sku_col = col
-                break
-        if sku_col is None:
-            sku_col = tiktok_active_df.columns[0]
-            
-        pid_col = None
-        for col in tiktok_active_df.columns:
-            if 'product id' in str(col).lower() or 'pid' in str(col).lower():
-                pid_col = col
-                break
-        if pid_col is None:
-            pid_col = tiktok_active_df.columns[1] if len(tiktok_active_df.columns) > 1 else tiktok_active_df.columns[0]
-            
-        qty_col = None
-        for col in tiktok_active_df.columns:
-            if 'quantity' in str(col).lower() or 'qty' in str(col).lower() or 'stock' in str(col).lower():
-                qty_col = col
-                break
-        if qty_col is None:
-            qty_col = tiktok_active_df.columns[2] if len(tiktok_active_df.columns) > 2 else tiktok_active_df.columns[0]
-
-        for _, row in tiktok_active_df.iterrows():
-            sku = clean_sku(row.get(sku_col))
-            pid = clean_pid(row.get(pid_col))
-            qty_val = pd.to_numeric(row.get(qty_col), errors='coerce')
-            qty = 0 if pd.isna(qty_val) else int(qty_val)
-            
-            if sku:
-                tiktok_items.append({
-                    'sku': sku,
-                    'pid': pid,
-                    'mp_stock': qty,
-                    'mp_status': 'Active'
-                })
-                
-    if tiktok_inactive_df is not None and not tiktok_inactive_df.empty:
-        sku_col = None
-        for col in tiktok_inactive_df.columns:
-            if 'seller sku' in str(col).lower() or 'sku' in str(col).lower():
-                sku_col = col
-                break
-        if sku_col is None:
-            sku_col = tiktok_inactive_df.columns[0]
-            
-        pid_col = None
-        for col in tiktok_inactive_df.columns:
-            if 'product id' in str(col).lower() or 'pid' in str(col).lower():
-                pid_col = col
-                break
-        if pid_col is None:
-            pid_col = tiktok_inactive_df.columns[1] if len(tiktok_inactive_df.columns) > 1 else tiktok_inactive_df.columns[0]
-            
-        qty_col = None
-        for col in tiktok_inactive_df.columns:
-            if 'quantity' in str(col).lower() or 'qty' in str(col).lower() or 'stock' in str(col).lower():
-                qty_col = col
-                break
-        if qty_col is None:
-            qty_col = tiktok_inactive_df.columns[2] if len(tiktok_inactive_df.columns) > 2 else tiktok_inactive_df.columns[0]
-
-        for _, row in tiktok_inactive_df.iterrows():
-            sku = clean_sku(row.get(sku_col))
-            pid = clean_pid(row.get(pid_col))
-            qty_val = pd.to_numeric(row.get(qty_col), errors='coerce')
-            qty = 0 if pd.isna(qty_val) else int(qty_val)
-            
-            if sku:
-                tiktok_items.append({
-                    'sku': sku,
-                    'pid': pid,
-                    'mp_stock': qty,
-                    'mp_status': 'Inactive'
-                })
-
+    tiktok_items = active_items + inactive_items
+    
     # Deduplicate tiktok_items by SKU, prioritizing Active status
     sku_to_item = {}
     for item in tiktok_items:
@@ -597,11 +594,10 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
         if s not in sku_to_item:
             sku_to_item[s] = item
         else:
-            # If duplicate exists, prioritize "Active"
             if sku_to_item[s]['mp_status'] == 'Inactive' and item['mp_status'] == 'Active':
                 sku_to_item[s] = item
     tiktok_items = list(sku_to_item.values())
-
+    
     # 2. Build TC Inventory Lookup
     tc_inv_lookup = {}
     if tc_inv_df is not None and not tc_inv_df.empty:
@@ -629,16 +625,8 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
         mp_stock = item['mp_stock']
         mp_status = item['mp_status']
         
-        # Discard metadata rows
-        if not sku or not pid:
-            continue
-        s_lower = sku.lower()
-        p_lower = pid.lower()
-        if p_lower in ['category', 'mandatory', 'uneditable'] or s_lower in ['sku id', 'mandatory', 'uneditable']:
-            continue
-            
         tc_info = tc_inv_lookup.get(sku, {'tc_status': 'Inactive', 'max_0': 'No'})
-        tc_status = tc_info['tc_status']
+        tc_status_val = tc_info['tc_status']
         max_0 = tc_info['max_0']
         
         tc_stock = resolver.get_tc_stock(sku)
@@ -648,7 +636,7 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
             pid_groups[pid] = {
                 'skus': [],
                 'mp_stock': 0,
-                'mp_status': mp_status,
+                'mp_statuses': [],
                 'tc_statuses': [],
                 'tc_stock': 0,
                 'reserved_stock': 0,
@@ -657,7 +645,8 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
             
         pid_groups[pid]['skus'].append(sku)
         pid_groups[pid]['mp_stock'] += mp_stock
-        pid_groups[pid]['tc_statuses'].append(tc_status)
+        pid_groups[pid]['mp_statuses'].append(mp_status)
+        pid_groups[pid]['tc_statuses'].append(tc_status_val)
         pid_groups[pid]['tc_stock'] += tc_stock
         pid_groups[pid]['reserved_stock'] += reserved_stock
         pid_groups[pid]['max_0_values'].append(max_0)
@@ -667,12 +656,13 @@ def validate_tiktok(tiktok_active_df, tiktok_inactive_df, tc_inv_df, all_df, buf
         unique_skus = list(dict.fromkeys(group['skus']))
         skus_str = "+".join(unique_skus)
         
-        mp_status = group['mp_status']
-        tc_status = "Active" if "Active" in group['tc_statuses'] else "Inactive"
-        
+        mp_status = "Active" if "Active" in group['mp_statuses'] else "Inactive"
         mp_stock_val = group['mp_stock']
         tc_stock_val = group['tc_stock']
         res_stock_val = group['reserved_stock']
+        
+        # New Rule: tc_status is based on consolidated stock availability
+        tc_status = "Active" if tc_stock_val > 0 else "Inactive"
         
         max_0 = "Yes" if "Yes" in group['max_0_values'] else "No"
         
